@@ -44,7 +44,7 @@ pub trait System {
     #[ink(message)]
     fn set_driver(&mut self, name: String, contract_id: AccountId) -> Result<()>;
 
-    /// Set a contract as a driver for `name`.
+    /// Get driver contract id for `name`.
     ///
     /// The caller must be the owner of the cluster or an administrator.
     #[ink(message)]

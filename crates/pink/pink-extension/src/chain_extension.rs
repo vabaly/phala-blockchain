@@ -19,15 +19,81 @@ pub mod test;
 #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
 pub struct StorageQuotaExceeded;
 
+mod sealed {
+    pub trait Sealed {}
+}
+pub trait CodableError: sealed::Sealed {
+    fn encode(&self) -> u32;
+    fn decode(code: u32) -> Option<Self>
+    where
+        Self: Sized;
+}
+
+macro_rules! impl_codable_error_for {
+    ($t: path) => {
+        impl sealed::Sealed for $t {}
+        impl CodableError for $t {
+            fn encode(&self) -> u32 {
+                1
+            }
+
+            fn decode(code: u32) -> Option<Self> {
+                if code == 1 {
+                    Some(Self)
+                } else {
+                    None
+                }
+            }
+        }
+
+        impl From<ErrorCode> for $t {
+            fn from(value: ErrorCode) -> Self {
+                match <Self as CodableError>::decode(value.0) {
+                    None => crate::panic!("chain extension: invalid output"),
+                    Some(err) => err,
+                }
+            }
+        }
+
+        impl From<scale::Error> for $t {
+            fn from(_value: scale::Error) -> Self {
+                crate::panic!("chain_ext: failed to decocde output")
+            }
+        }
+    };
+}
+impl_codable_error_for!(StorageQuotaExceeded);
+
+pub struct EncodeOutput<T>(pub T);
+
+pub trait EncodeOutputFallbask {
+    fn encode(self) -> (u32, Vec<u8>);
+}
+
+impl<T: scale::Encode, E: CodableError> EncodeOutput<Result<T, E>> {
+    pub fn encode(self) -> (u32, Vec<u8>) {
+        match self.0 {
+            Ok(val) => (0, val.encode()),
+            Err(err) => (err.encode(), Vec::new()),
+        }
+    }
+}
+
+impl<T: scale::Encode> EncodeOutputFallbask for EncodeOutput<T> {
+    fn encode(self) -> (u32, Vec<u8>) {
+        (0, self.0.encode())
+    }
+}
+
 #[derive(scale::Encode, scale::Decode)]
 #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
-pub enum ErrorCode {}
+pub struct ErrorCode(u32);
 
 impl ink_env::chain_extension::FromStatusCode for ErrorCode {
     fn from_status_code(status_code: u32) -> Result<(), Self> {
         match status_code {
             0 => Ok(()),
-            _ => panic!("encountered unknown status code"),
+            _ => Err(ErrorCode(status_code)),
         }
     }
 }
@@ -59,7 +125,7 @@ pub trait PinkExt {
     /// Values stored in cache can only be read in query functions.
     ///
     /// Alwasy returns `Ok(())` if it is called from a command context.
-    #[ink(extension = 6, handle_status = false, returns_result = false)]
+    #[ink(extension = 6, handle_status = true, returns_result = true)]
     fn cache_set(key: &[u8], value: &[u8]) -> Result<(), StorageQuotaExceeded>;
 
     /// Set the expiration time of a value in the local cache.
