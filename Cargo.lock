@@ -8184,7 +8184,7 @@ dependencies = [
 
 [[package]]
 name = "pink-extension"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ink_env",
  "ink_lang",
@@ -13556,7 +13556,7 @@ checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
 dependencies = [
  "cfg-if",
  "digest 0.10.3",
- "rand 0.8.5",
+ "rand 0.4.6",
  "static_assertions",
 ]
 
