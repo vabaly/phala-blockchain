@@ -49,9 +49,9 @@ struct Args {
     #[arg(long)]
     disable_checkpoint: bool,
 
-    /// Checkpoint interval in seconds, default to 5 minutes
+    /// Checkpoint interval in seconds, default to 1 hour.
     #[arg(long)]
-    #[arg(default_value_t = 300)]
+    #[arg(default_value_t = 3600)]
     checkpoint_interval: u64,
 
     /// Remove corrupted checkpoint so that pruntime can restart to continue to load others.
