@@ -1,0 +1,20 @@
+[package]
+name = "prb"
+version = "0.1.0"
+authors = ["Jiacheng Zhang <os@kt.je>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bytes = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0.144", features = ["derive"] }
+env_logger = "0.10.0"
+log = "0.4.17"
+anyhow = "1.0.65"
+lazy_static = "1.4.0"
+rust-fsm = "0.6.1"
+clap = { version = "4.1.6", features = ["unicode", "env", "cargo", "derive", "wrap_help"] }
+futures = "0.3.26"
