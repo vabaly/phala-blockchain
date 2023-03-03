@@ -1,10 +1,9 @@
 use crate::cli::WorkerManagerCliArgs;
-use crate::lifecycle::{
-    set_lifecycle_manager, spawn_lifecycle_threads, WorkerLifecycleManager,
-    WrappedWorkerLifecycleManager,
-};
+use crate::db::{setup_cache_index_db, setup_inventory_db, WrappedDb};
+use crate::lifecycle::{set_lifecycle_manager, WrappedWorkerLifecycleManager};
 use crate::utils::join_handles;
 use anyhow::{anyhow, Result};
+use futures::FutureExt;
 use lazy_static::lazy_static;
 use log::{debug, error, info};
 use std::sync::Arc;
@@ -37,8 +36,8 @@ pub struct WorkerManagerContext {
 pub type WrappedWorkerManagerContext = Arc<RwLock<WorkerManagerContext>>;
 
 pub enum WorkerManagerMessage {
-    ShouldSetLifecycleManager,
-    ShouldResetLifecycleManager,
+    ShouldSetLifecycleManager(WrappedDb, WrappedDb),
+    ShouldResetLifecycleManager(WrappedDb),
 }
 
 lazy_static! {
@@ -94,6 +93,9 @@ pub async fn send_to_main_channel_and_wait_for_response(
 pub async fn wm(args: WorkerManagerCliArgs) {
     info!("Staring prb-wm with {:?}", &args);
 
+    let inv_db = setup_inventory_db(&args.db_path);
+    let ci_db = setup_cache_index_db(&args.db_path, args.use_persisted_cache_index);
+
     let main_tx = MAIN_CHANNEL.0.clone();
     let main_rx = MAIN_CHANNEL.1.clone();
     let main_controller_handle = tokio::spawn(main_loop(main_tx.clone(), main_rx));
@@ -101,12 +103,12 @@ pub async fn wm(args: WorkerManagerCliArgs) {
 
     send_to_main_channel(
         main_tx.clone(),
-        WorkerManagerMessage::ShouldSetLifecycleManager,
+        WorkerManagerMessage::ShouldSetLifecycleManager(inv_db.clone(), ci_db.clone()),
     )
     .await
     .expect("Failed to send lifecycle set message!");
 
-    handle.await
+    handle.await;
 }
 
 async fn main_loop(tx: WorkerManagerCommandTx, rx: Arc<Mutex<WorkerManagerCommandRx>>) {
@@ -118,10 +120,11 @@ async fn main_loop(tx: WorkerManagerCommandTx, rx: Arc<Mutex<WorkerManagerComman
     }) = rx.recv().await
     {
         match message {
-            WorkerManagerMessage::ShouldSetLifecycleManager => {
-                set_lifecycle_manager(tx.clone(), WM_CTX.clone()).await;
+            WorkerManagerMessage::ShouldSetLifecycleManager(inv_db, ci_db) => {
+                set_lifecycle_manager(tx.clone(), WM_CTX.clone(), inv_db, ci_db).await;
             }
-            WorkerManagerMessage::ShouldResetLifecycleManager => {
+            WorkerManagerMessage::ShouldResetLifecycleManager(_inv_db) => {
+                // TODO: hot-reloading
                 error!("Not implemented!")
             }
         }
