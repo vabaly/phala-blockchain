@@ -1,6 +1,10 @@
 use crate::configurator;
 use crate::wm::wm;
 use clap::{Parser, Subcommand};
+use log::{debug, error};
+use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::io::Stderr;
 
 #[derive(Parser, Debug)]
 #[command(name="prb", version, about="Phala Runtime Bridge Worker Manager", long_about = None)]
@@ -100,8 +104,89 @@ pub enum ConfigCommands {
         pid: u64,
     },
 
+    /// Get a pool with all workers belonged to
+    GetPoolWithWorkers {
+        /// Pool pid
+        #[arg(short, long)]
+        pid: u64,
+    },
+
     /// Get all pools,
     GetAllPools,
+
+    /// Get all pools with workers,
+    GetAllPoolsWithWorkers,
+
+    /// Add a worker
+    AddWorker {
+        /// Name of the worker
+        #[arg(short, long)]
+        name: String,
+
+        /// HTTP endpoint to the worker
+        #[arg(short, long)]
+        endpoint: String,
+
+        /// Stake amount in BN String
+        #[arg(short = 't', long)]
+        stake: String,
+
+        /// Pool pid
+        #[arg(short, long)]
+        pid: u64,
+
+        /// Whether the worker is disabled
+        #[arg(short, long, default_value_t = false)]
+        disabled: bool,
+
+        /// Whether the should be in sync-only mode
+        #[arg(short, long, default_value_t = false)]
+        sync_only: bool,
+    },
+
+    /// Update a worker
+    UpdateWorker {
+        /// Current name of the worker
+        #[arg(short, long)]
+        name: String,
+
+        /// New name of the worker
+        #[arg(long)]
+        new_name: Option<String>,
+
+        /// HTTP endpoint to the worker
+        #[arg(short, long)]
+        endpoint: String,
+
+        /// Stake amount in BN String
+        #[arg(short = 't', long)]
+        stake: String,
+
+        /// Pool pid
+        #[arg(short, long)]
+        pid: u64,
+
+        /// Whether the worker is disabled
+        #[arg(short, long, default_value_t = false)]
+        disabled: bool,
+
+        /// Whether the should be in sync-only mode
+        #[arg(short, long, default_value_t = false)]
+        sync_only: bool,
+    },
+
+    /// Remove a worker
+    RemoveWorker {
+        /// UUID of the worker
+        #[arg(short, long)]
+        name: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct CliErrorMessage {
+    message: String,
+    backtrace: String,
 }
 
 pub async fn start_config() {
@@ -110,5 +195,15 @@ pub async fn start_config() {
         .format_timestamp_micros()
         .parse_default_env()
         .init();
-    configurator::cli_main(ConfigCliArgs::parse()).await
+    match configurator::cli_main(ConfigCliArgs::parse()).await {
+        Ok(_) => {}
+        Err(e) => {
+            debug!("{}\n{}", &e, e.backtrace());
+            let ce = CliErrorMessage {
+                message: format!("{}", &e),
+                backtrace: format!("{}", e.backtrace()),
+            };
+            println!("{}", serde_json::to_string_pretty(&ce).unwrap())
+        }
+    }
 }

@@ -60,13 +60,13 @@ pub async fn spawn_lifecycle_tasks(
     debug!("spawn_lifecycle_threads start");
     let tx_move = tx.clone();
     join_handles(vec![tokio::spawn(async move {
+        send_to_main_channel(tx_move, WorkerManagerMessage::LifecycleManagerStarted)
+            .await
+            .expect("spawn_lifecycle_threads -> LifecycleManagerStarted");
         sleep(Duration::from_secs(3)).await;
     })])
     .await;
-    send_to_main_channel(
-        tx_move.clone(),
-        WorkerManagerMessage::ShouldBreakMessageLoop,
-    )
-    .await
-    .expect("TODO: panic message");
+    send_to_main_channel(tx.clone(), WorkerManagerMessage::ShouldBreakMessageLoop)
+        .await
+        .expect("spawn_lifecycle_tasks -> ShouldBreakMessageLoop");
 }
