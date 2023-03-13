@@ -1,15 +1,18 @@
-use crate::cli::WorkerManagerCliArgs;
-use crate::db::{setup_cache_index_db, setup_inventory_db, WrappedDb};
-use crate::lifecycle;
-use crate::lifecycle::{WorkerLifecycleManager, WrappedWorkerLifecycleManager};
-use crate::utils::join_handles;
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
+use futures::future::try_join_all;
 use lazy_static::lazy_static;
 use log::{debug, info};
-use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::JoinHandle;
+
+use crate::cli::WorkerManagerCliArgs;
+use crate::datasource::{setup_data_source_manager, WrappedDataSourceManager};
+use crate::db::{setup_cache_index_db, setup_inventory_db, Worker, WrappedDb};
+use crate::lifecycle::{WorkerLifecycleManager, WrappedWorkerLifecycleManager};
+use crate::utils::join_handles;
 
 pub type GlobalWorkerManagerCommandChannelPair = (
     mpsc::UnboundedSender<WorkerManagerCommand>,
@@ -33,12 +36,17 @@ pub struct WorkerManagerContext {
     pub current_lifecycle_manager_join_handle: Option<JoinHandle<()>>,
     pub current_lifecycle_manager: Option<WrappedWorkerLifecycleManager>,
 }
+
 pub type WrappedWorkerManagerContext = Arc<RwLock<WorkerManagerContext>>;
 
 pub enum WorkerManagerMessage {
+    Ok,
+
     LifecycleManagerStarted,
     ShouldBreakMessageLoop,
     ShouldResetLifecycleManager,
+
+    ShouldStartWorkerLifecycle(Worker),
 }
 
 pub type WrappedReloadTx = mpsc::Sender<()>;
@@ -64,6 +72,7 @@ pub async fn do_send_to_main_channel(
         Err(e) => Err(anyhow!("Failed to send to main channel! {}", e)),
     }
 }
+
 pub async fn send_to_main_channel(
     main_tx: WorkerManagerCommandTx,
     message: WorkerManagerMessage,
@@ -76,37 +85,34 @@ pub async fn send_to_main_channel_and_wait_for_response(
     message: WorkerManagerMessage,
 ) -> Result<WorkerManagerMessage> {
     let (response_tx, response_rx) = oneshot::channel::<WorkerManagerMessage>();
-    match do_send_to_main_channel(main_tx, message, Some(response_tx)).await {
-        Ok(_) => match response_rx.await {
-            Ok(res) => Ok(res),
-            Err(e) => Err(anyhow!(
-                "Failed to get response from the oneshot channel! {}",
-                e
-            )),
-        },
-        Err(e) => Err(e),
-    }
+    do_send_to_main_channel(main_tx, message, Some(response_tx)).await?;
+    let res = response_rx.await?;
+    Ok(res)
 }
 
 pub async fn set_lifecycle_manager(
     inv_db: WrappedDb,
     ci_db: WrappedDb,
+    dsm: WrappedDataSourceManager,
     reload_tx: WrappedReloadTx,
 ) {
     let (tx, rx) = mpsc::unbounded_channel::<WorkerManagerCommand>();
 
     let ctx_move = WM_CTX.clone();
     let lm = WorkerLifecycleManager::create(tx.clone(), ctx_move.clone(), inv_db, ci_db);
+
     let mut ctx = ctx_move.write().await;
     ctx.current_lifecycle_manager = Some(lm.clone());
     drop(ctx);
 
-    let lifecycle_tasks_handle =
-        lifecycle::spawn_lifecycle_tasks(tx.clone(), ctx_move.clone(), lm.clone());
-
     join_handles(vec![
         tokio::spawn(message_loop(tx.clone(), rx, reload_tx)),
-        tokio::spawn(lifecycle_tasks_handle),
+        tokio::spawn(WorkerLifecycleManager::spawn_lifecycle_tasks(
+            lm.clone(),
+            tx.clone(),
+            ctx_move.clone(),
+            dsm.clone(),
+        )),
     ])
     .await
 }
@@ -116,20 +122,33 @@ pub async fn wm(args: WorkerManagerCliArgs) {
 
     let inv_db = setup_inventory_db(&args.db_path);
     let ci_db = setup_cache_index_db(&args.db_path, args.use_persisted_cache_index);
+    let (dsm, ds_handles) = setup_data_source_manager(&args.data_source_config_path)
+        .await
+        .expect("Initialize data source manager");
 
-    loop {
-        let (reload_tx, mut reload_rx) = mpsc::channel::<()>(1);
-        let main_handle = set_lifecycle_manager(inv_db.clone(), ci_db.clone(), reload_tx.clone());
+    tokio::select! {
+        _ = try_join_all(ds_handles) => {}
+        _ = async {
+            loop {
+                let (reload_tx, mut reload_rx) = mpsc::channel::<()>(1);
+                let main_handle = set_lifecycle_manager(
+                    inv_db.clone(),
+                    ci_db.clone(),
+                    dsm.clone(),
+                    reload_tx.clone(),
+                );
 
-        tokio::select! {
-            _ = main_handle => {
-                info!("Task done, exiting!");
-                std::process::exit(0);
+                tokio::select! {
+                    _ = main_handle => {
+                        info!("Task done, exiting!");
+                        std::process::exit(0);
+                    }
+                    _ = reload_rx.recv() => {
+                        info!("Reload signal received.");
+                    }
+                }
             }
-            _ = reload_rx.recv() => {
-                info!("Reload signal received.");
-            }
-        }
+        } => {}
     }
 }
 
@@ -147,6 +166,7 @@ async fn message_loop(
         match message {
             WorkerManagerMessage::ShouldBreakMessageLoop => break,
             WorkerManagerMessage::LifecycleManagerStarted => {
+                // todo: setup status map
                 info!("LifecycleManagerStarted");
             }
             WorkerManagerMessage::ShouldResetLifecycleManager => {
@@ -156,6 +176,13 @@ async fn message_loop(
                     .await
                     .expect("ShouldResetLifecycleManager");
             }
+
+            WorkerManagerMessage::ShouldStartWorkerLifecycle(w) => {
+                // todo: setup status map
+                let _ = response_tx.unwrap().send(WorkerManagerMessage::Ok);
+            }
+
+            _ => {}
         }
     }
 }

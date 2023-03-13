@@ -36,7 +36,7 @@ pub const ID_VERTEX_INVENTORY_DATA_SOURCE: &str = "iv_ds";
 pub type Db = dyn Datastore + Send + Sync + 'static;
 pub type WrappedDb = Arc<Db>;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Pool {
     pub id: String,
     pub name: String,
@@ -46,7 +46,7 @@ pub struct Pool {
     pub workers: Option<Vec<Worker>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Worker {
     pub id: String,
     pub name: String,
@@ -153,7 +153,7 @@ pub fn validate_endpoint(s: String) -> Result<String> {
 }
 
 pub fn setup_inventory_db(db_path: &str) -> WrappedDb {
-    let db_path = Path::new(db_path).join("local");
+    let db_path = Path::new(db_path).join("inventory");
     let db = RocksdbDatastore::new(&db_path, None).expect("Failed to open inventory database.");
     let db = Arc::new(db);
     debug!("Opened inventory database in {:?}", db_path);

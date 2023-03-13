@@ -1,15 +1,15 @@
-use crate::db::{get_all_workers, WrappedDb};
+use crate::datasource::WrappedDataSourceManager;
+use crate::db::{get_all_workers, Worker, WrappedDb};
 use crate::utils::join_handles;
 use crate::wm::{
-    send_to_main_channel, WorkerManagerCommandTx, WorkerManagerMessage, WrappedWorkerManagerContext,
+    send_to_main_channel, send_to_main_channel_and_wait_for_response, WorkerManagerCommandTx,
+    WorkerManagerMessage, WrappedWorkerManagerContext,
 };
 use log::{debug, info};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use tokio::time::sleep;
 
 pub struct WorkerLifecycleManager {
     pub main_tx: WorkerManagerCommandTx,
@@ -18,8 +18,9 @@ pub struct WorkerLifecycleManager {
     pub handles_count: u16,
     pub inv_db: WrappedDb,
     pub ci_db: WrappedDb,
+    pub workers: Vec<Worker>,
 }
-pub type WrappedWorkerLifecycleManager = Arc<RwLock<WorkerLifecycleManager>>;
+pub type WrappedWorkerLifecycleManager = Arc<WorkerLifecycleManager>;
 
 pub struct WorkerContext {
     pub id: String,
@@ -36,6 +37,26 @@ impl WorkerLifecycleManager {
         inv_db: WrappedDb,
         ci_db: WrappedDb,
     ) -> WrappedWorkerLifecycleManager {
+        let workers =
+            get_all_workers(inv_db.clone()).expect("Failed to load workers from local database");
+        let count = workers.len();
+        let workers = workers
+            .into_iter()
+            .filter(|w| w.enabled)
+            .collect::<Vec<_>>();
+        let count_enabled = workers.len();
+        if count_enabled == 0 {
+            info!("Got {} worker(s) from local database.", count);
+            panic!("There are no worker enabled!");
+        }
+        debug!(
+            "Got workers:\n{}",
+            serde_json::to_string_pretty(&workers).unwrap()
+        );
+        info!(
+            "Starting lifecycle for {} of {} worker(s).",
+            count_enabled, count
+        );
         let lm = Self {
             main_tx,
             main_ctx,
@@ -43,30 +64,50 @@ impl WorkerLifecycleManager {
             handles_count: 0,
             inv_db: inv_db.clone(),
             ci_db: ci_db.clone(),
+            workers,
         };
-        // TODO: read database
-        // let a = get_all_workers(inv_db.clone()).unwrap();
-        // info!("{:?}", a);
-        // info!("Loading workers from database...");
-        Arc::new(RwLock::new(lm))
+        Arc::new(lm)
+    }
+
+    pub async fn spawn_lifecycle_tasks(
+        lm: WrappedWorkerLifecycleManager,
+        tx: WorkerManagerCommandTx,
+        ctx: WrappedWorkerManagerContext,
+        dsm: WrappedDataSourceManager,
+    ) {
+        debug!("spawn_lifecycle_threads start");
+        let workers = lm.workers.clone();
+        join_handles(
+            workers
+                .into_iter()
+                .map(|w| {
+                    tokio::spawn(start_worker_lifecycle(
+                        w,
+                        tx.clone(),
+                        ctx.clone(),
+                        dsm.clone(),
+                    ))
+                })
+                .collect(),
+        )
+        .await;
+        send_to_main_channel(tx.clone(), WorkerManagerMessage::ShouldBreakMessageLoop)
+            .await
+            .expect("spawn_lifecycle_tasks -> ShouldBreakMessageLoop");
     }
 }
 
-pub async fn spawn_lifecycle_tasks(
+async fn start_worker_lifecycle(
+    worker: Worker,
     tx: WorkerManagerCommandTx,
     ctx: WrappedWorkerManagerContext,
-    lm: WrappedWorkerLifecycleManager,
+    dsm: WrappedDataSourceManager,
 ) {
-    debug!("spawn_lifecycle_threads start");
-    let tx_move = tx.clone();
-    join_handles(vec![tokio::spawn(async move {
-        send_to_main_channel(tx_move, WorkerManagerMessage::LifecycleManagerStarted)
-            .await
-            .expect("spawn_lifecycle_threads -> LifecycleManagerStarted");
-        sleep(Duration::from_secs(3)).await;
-    })])
-    .await;
-    send_to_main_channel(tx.clone(), WorkerManagerMessage::ShouldBreakMessageLoop)
-        .await
-        .expect("spawn_lifecycle_tasks -> ShouldBreakMessageLoop");
+    let _ = send_to_main_channel_and_wait_for_response(
+        tx.clone(),
+        WorkerManagerMessage::ShouldStartWorkerLifecycle(worker.clone()),
+    )
+    .await
+    .expect(format!("Failed to start worker {}", &worker.name).as_str());
+    loop {}
 }

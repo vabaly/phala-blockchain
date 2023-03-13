@@ -13,6 +13,9 @@ pub struct WorkerManagerCliArgs {
     #[arg(short = 'd', long, env, default_value = "/var/data/prb-wm")]
     pub db_path: String,
 
+    #[arg(short = 's', long, env, default_value = "/var/data/prb-wm/ds.yml")]
+    pub data_source_config_path: String,
+
     /// Use persisted cache index
     #[arg(short = 'c', long, env)]
     pub use_persisted_cache_index: bool,
